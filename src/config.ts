@@ -51,6 +51,11 @@ export function loadConfig(): BotConfig {
     copyTradeAmount: parseFloat(process.env.COPY_TRADE_AMOUNT || '0.05'),
     copyTradeMultiplier: parseFloat(process.env.COPY_TRADE_MULTIPLIER || '1.0'),
     
+    // 优先级模式配置（更快的卖出）
+    priorityMode: process.env.PRIORITY_MODE === 'true',
+    priorityGasMultiplier: parseFloat(process.env.PRIORITY_GAS_MULTIPLIER || '3.0'),
+    preApproveMax: process.env.PRE_APPROVE_MAX !== 'false', // 默认true
+    
     // 日志配置
     logLevel: process.env.LOG_LEVEL || 'info',
   };

@@ -31,6 +31,9 @@ export class SniperBot {
   private readonly MAX_PROCESSED_TX = 5000;
   private readonly MAX_RETRY_ATTEMPTS = 3; // 最大重试次数
   private connectionHealthy: boolean;
+  private gasPriceCache: { price: string; timestamp: number } | null = null;
+  private readonly GAS_CACHE_TTL = 5000; // Gas价格缓存5秒
+  private approvedTokens: Set<string> = new Set(); // 已授权的代币
 
   constructor(config: BotConfig, logger: Logger) {
     this.config = config;
@@ -451,20 +454,36 @@ export class SniperBot {
    */
   private async getOptimizedGasPrice(): Promise<string> {
     try {
+      // 检查缓存
+      const now = Date.now();
+      if (this.gasPriceCache && (now - this.gasPriceCache.timestamp) < this.GAS_CACHE_TTL) {
+        return this.gasPriceCache.price;
+      }
+
       const gasPrice = await this.web3.eth.getGasPrice();
       
       // 根据配置的倍数调整
+      const multiplier = this.config.priorityMode ? 
+        this.config.priorityGasMultiplier : 
+        this.config.gasPriceMultiplier;
+      
       const adjustedGasPrice = new BigNumber(gasPrice.toString())
-        .multipliedBy(this.config.gasPriceMultiplier)
+        .multipliedBy(multiplier)
         .toFixed(0);
 
       // 确保不低于基础Gas价格
       const minGasPrice = this.web3.utils.toWei('5', 'gwei');
-      if (new BigNumber(adjustedGasPrice).isLessThan(minGasPrice)) {
-        return minGasPrice;
-      }
+      const finalGasPrice = new BigNumber(adjustedGasPrice).isLessThan(minGasPrice) 
+        ? minGasPrice 
+        : adjustedGasPrice;
 
-      return adjustedGasPrice;
+      // 更新缓存
+      this.gasPriceCache = {
+        price: finalGasPrice,
+        timestamp: now
+      };
+
+      return finalGasPrice;
     } catch (error: any) {
       this.logger.warn('获取Gas价格失败，使用默认值', { error: error.message });
       return this.web3.utils.toWei('5', 'gwei');
@@ -571,38 +590,62 @@ export class SniperBot {
         this.logger.info('准备卖出代币', { token: tokenAddress, amount, attempt });
 
         const path = [tokenAddress, this.config.wbnbAddress];
-        
-        // 授权代币（如果需要）
         const tokenContract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
-        const allowance = await tokenContract.methods.allowance(this.account.address, this.config.pancakeswapRouter).call();
         
-        if (new BigNumber(String(allowance)).isLessThan(amount)) {
-          this.logger.info('授权代币...');
-          await tokenContract.methods.approve(this.config.pancakeswapRouter, amount).send({
-            from: this.account.address,
-            gas: '100000'
+        // 并行执行授权检查和价格查询以节省时间
+        const [allowanceResult, amountsResult, gasPriceResult] = await Promise.all([
+          // 检查授权
+          tokenContract.methods.allowance(this.account.address, this.config.pancakeswapRouter).call(),
+          // 获取预期输出
+          this.routerContract.methods.getAmountsOut(amount, path).call(),
+          // 获取优化的Gas价格
+          this.getOptimizedGasPrice()
+        ]);
+
+        const allowance = allowanceResult;
+        const needsApproval = new BigNumber(String(allowance)).isLessThan(amount);
+        
+        // 如果需要授权
+        if (needsApproval && !this.approvedTokens.has(tokenAddress.toLowerCase())) {
+          this.logger.info('授权代币...', { 
+            mode: this.config.preApproveMax ? '最大额度' : '当前额度' 
           });
+          
+          // 根据配置决定授权额度
+          const approvalAmount = this.config.preApproveMax 
+            ? '115792089237316195423570985008687907853269984665640564039457584007913129639935' // uint256 max
+            : amount;
+          
+          await tokenContract.methods.approve(this.config.pancakeswapRouter, approvalAmount).send({
+            from: this.account.address,
+            gas: '100000',
+            gasPrice: gasPriceResult
+          });
+          
+          // 标记为已授权（如果是最大额度授权）
+          if (this.config.preApproveMax) {
+            this.approvedTokens.add(tokenAddress.toLowerCase());
+          }
         }
 
-        // 获取预期输出
-        const amounts = await this.routerContract.methods.getAmountsOut(amount, path).call();
-        const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
-        const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
-        
         // 应用滑点
+        const amounts = Array.isArray(amountsResult) ? amountsResult : [amountsResult];
+        const amountOut = amounts.length > 1 ? String(amounts[1]) : '0';
         const minAmountOut = new BigNumber(amountOut)
           .multipliedBy(100 - this.config.slippageTolerance)
           .dividedBy(100)
           .toFixed(0);
 
-        // 获取优化的Gas价格
-        const adjustedGasPrice = await this.getOptimizedGasPrice();
-
-        // 设置截止时间
-        const deadline = Math.floor(Date.now() / 1000) + 300;
+        // 设置截止时间（优先级模式使用更短时间）
+        const deadlineSeconds = this.config.priorityMode ? 60 : 300;
+        const deadline = Math.floor(Date.now() / 1000) + deadlineSeconds;
 
         // 执行卖出交易
-        this.logger.info('发送卖出交易...');
+        this.logger.info('发送卖出交易...', {
+          priorityMode: this.config.priorityMode,
+          gasMultiplier: this.config.priorityMode ? this.config.priorityGasMultiplier : this.config.gasPriceMultiplier
+        });
+        
         const tx = await this.routerContract.methods
           .swapExactTokensForETH(
             amount,
@@ -614,7 +657,7 @@ export class SniperBot {
           .send({
             from: this.account.address,
             gas: String(this.config.gasLimit),
-            gasPrice: adjustedGasPrice
+            gasPrice: gasPriceResult
           });
 
         this.logger.info('卖出成功', {

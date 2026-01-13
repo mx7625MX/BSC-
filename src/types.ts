@@ -45,6 +45,11 @@ export interface BotConfig {
   copyTradeAmount: number;
   copyTradeMultiplier: number;
   
+  // 优先级模式配置
+  priorityMode: boolean;
+  priorityGasMultiplier: number;
+  preApproveMax: boolean;
+  
   // 日志配置
   logLevel: string;
 }
