@@ -10,11 +10,17 @@ import {
   PAIR_ABI
 } from './abis';
 
+interface ReservesData {
+  _reserve0?: string | bigint;
+  _reserve1?: string | bigint;
+  [key: number]: string | bigint;
+}
+
 export class SniperBot {
   private web3: Web3;
   private config: BotConfig;
   private logger: Logger;
-  private account: any;
+  private account: { address: string; privateKey: string };
   private routerContract: Contract<any>;
   private factoryContract: Contract<any>;
   private processedPairs: Set<string>;
@@ -28,9 +34,10 @@ export class SniperBot {
     this.isRunning = false;
 
     // 设置账户
-    this.account = this.web3.eth.accounts.privateKeyToAccount(config.privateKey);
-    this.web3.eth.accounts.wallet.add(this.account);
-    this.web3.eth.defaultAccount = this.account.address;
+    const walletAccount = this.web3.eth.accounts.privateKeyToAccount(config.privateKey);
+    this.account = walletAccount;
+    this.web3.eth.accounts.wallet.add(walletAccount);
+    this.web3.eth.defaultAccount = walletAccount.address;
 
     // 初始化合约
     this.routerContract = new this.web3.eth.Contract(
@@ -100,7 +107,7 @@ export class SniperBot {
 
         if (currentBlock > lastBlock) {
           // 检查新区块中的交易对创建事件
-          await this.checkNewPairsInBlock(lastBlock + BigInt(1), currentBlock);
+          await this.checkNewPairsInBlock(lastBlock + 1n, currentBlock);
           lastBlock = currentBlock;
         }
 
@@ -120,8 +127,8 @@ export class SniperBot {
     try {
       // 获取PairCreated事件
       const events = await this.factoryContract.getPastEvents('PairCreated', {
-        fromBlock: fromBlock,
-        toBlock: toBlock
+        fromBlock: Number(fromBlock),
+        toBlock: Number(toBlock)
       });
 
       for (const event of events) {
@@ -229,13 +236,13 @@ export class SniperBot {
       pairContract.methods.token1().call()
     ]);
 
-    const reservesData = reserves as any;
+    const reservesData = reserves as ReservesData;
 
     return {
       token0: String(token0),
       token1: String(token1),
-      reserve0: String(reservesData._reserve0 || reservesData[0]),
-      reserve1: String(reservesData._reserve1 || reservesData[1]),
+      reserve0: String(reservesData._reserve0 || reservesData[0] || '0'),
+      reserve1: String(reservesData._reserve1 || reservesData[1] || '0'),
       pairAddress
     };
   }
@@ -265,8 +272,8 @@ export class SniperBot {
 
       // 获取预期输出
       const amounts = await this.routerContract.methods.getAmountsOut(amountIn, path).call();
-      const amountsArray = amounts as any[];
-      const amountOut = amountsArray[1];
+      const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
+      const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
       
       // 应用滑点容忍度
       const minAmountOut = new BigNumber(amountOut.toString())
