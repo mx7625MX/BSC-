@@ -27,6 +27,10 @@ export class SniperBot {
   private holdings: Map<string, HoldingInfo>;
   private processedTransactions: Set<string>;
   private isRunning: boolean;
+  private readonly MAX_PROCESSED_PAIRS = 10000; // 限制缓存大小避免内存泄漏
+  private readonly MAX_PROCESSED_TX = 5000;
+  private readonly MAX_RETRY_ATTEMPTS = 3; // 最大重试次数
+  private connectionHealthy: boolean;
 
   constructor(config: BotConfig, logger: Logger) {
     this.config = config;
@@ -36,6 +40,7 @@ export class SniperBot {
     this.holdings = new Map();
     this.processedTransactions = new Set();
     this.isRunning = false;
+    this.connectionHealthy = true;
 
     // 设置账户
     const walletAccount = this.web3.eth.accounts.privateKeyToAccount(config.privateKey);
@@ -66,6 +71,9 @@ export class SniperBot {
   async start(): Promise<void> {
     this.logger.info('启动 BSC MEME币阻击机器人...');
     this.isRunning = true;
+
+    // 启动健康检查
+    this.startHealthCheck();
 
     // 检查账户余额
     await this.checkBalance();
@@ -105,6 +113,51 @@ export class SniperBot {
   }
 
   /**
+   * 健康检查 - 定期检查连接状态
+   */
+  private startHealthCheck(): void {
+    setInterval(async () => {
+      try {
+        const blockNumber = await this.web3.eth.getBlockNumber();
+        if (!this.connectionHealthy) {
+          this.logger.info('连接恢复正常', { blockNumber });
+        }
+        this.connectionHealthy = true;
+      } catch (error: any) {
+        this.logger.error('连接异常', { error: error.message });
+        this.connectionHealthy = false;
+      }
+    }, 30000); // 每30秒检查一次
+  }
+
+  /**
+   * 清理旧的处理记录避免内存泄漏
+   */
+  private cleanupOldRecords(): void {
+    // 清理processedPairs
+    if (this.processedPairs.size > this.MAX_PROCESSED_PAIRS) {
+      const toDelete = this.processedPairs.size - this.MAX_PROCESSED_PAIRS;
+      const iterator = this.processedPairs.values();
+      for (let i = 0; i < toDelete; i++) {
+        const value = iterator.next().value;
+        if (value) this.processedPairs.delete(value);
+      }
+      this.logger.info('清理旧的交易对记录', { deleted: toDelete });
+    }
+
+    // 清理processedTransactions
+    if (this.processedTransactions.size > this.MAX_PROCESSED_TX) {
+      const toDelete = this.processedTransactions.size - this.MAX_PROCESSED_TX;
+      const iterator = this.processedTransactions.values();
+      for (let i = 0; i < toDelete; i++) {
+        const value = iterator.next().value;
+        if (value) this.processedTransactions.delete(value);
+      }
+      this.logger.info('清理旧的交易记录', { deleted: toDelete });
+    }
+  }
+
+  /**
    * 检查账户余额
    */
   private async checkBalance(): Promise<void> {
@@ -129,18 +182,29 @@ export class SniperBot {
 
     while (this.isRunning) {
       try {
+        // 检查连接健康状况
+        if (!this.connectionHealthy) {
+          this.logger.warn('连接不健康，等待恢复...');
+          await this.sleep(10000);
+          continue;
+        }
+
         const currentBlock = await this.web3.eth.getBlockNumber();
 
         if (currentBlock > lastBlock) {
           // 检查新区块中的交易对创建事件
           await this.checkNewPairsInBlock(lastBlock + 1n, currentBlock);
           lastBlock = currentBlock;
+
+          // 定期清理旧记录
+          this.cleanupOldRecords();
         }
 
         // 等待一段时间后继续
         await this.sleep(this.config.monitorInterval);
       } catch (error) {
         this.logger.error('监控过程中出错', { error });
+        this.connectionHealthy = false;
         await this.sleep(5000); // 出错后等待5秒再继续
       }
     }
@@ -282,90 +346,128 @@ export class SniperBot {
   }
 
   /**
-   * 执行购买
+   * 执行购买（带重试机制）
    */
   private async executeBuy(tokenAddress: string, tokenInfo: TokenInfo): Promise<TradeResult> {
+    for (let attempt = 1; attempt <= this.MAX_RETRY_ATTEMPTS; attempt++) {
+      try {
+        this.logger.info('准备购买代币', {
+          token: tokenAddress,
+          symbol: tokenInfo.symbol,
+          amount: this.config.maxBuyAmount,
+          attempt
+        });
+
+        // 计算最小输出（考虑滑点）
+        const amountIn = this.web3.utils.toWei(this.config.maxBuyAmount.toString(), 'ether');
+        const path = [this.config.wbnbAddress, tokenAddress];
+
+        // 获取预期输出
+        const amounts = await this.routerContract.methods.getAmountsOut(amountIn, path).call();
+        const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
+        const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
+        
+        // 应用滑点容忍度
+        const minAmountOut = new BigNumber(amountOut.toString())
+          .multipliedBy(100 - this.config.slippageTolerance)
+          .dividedBy(100)
+          .toFixed(0);
+
+        // 动态获取Gas价格（优化）
+        const gasPrice = await this.getOptimizedGasPrice();
+
+        // 设置交易截止时间（5分钟后）
+        const deadline = Math.floor(Date.now() / 1000) + 300;
+
+        // 执行交易
+        this.logger.info('发送交易...');
+        const tx = await this.routerContract.methods
+          .swapExactETHForTokens(
+            minAmountOut,
+            path,
+            this.account.address,
+            deadline
+          )
+          .send({
+            from: this.account.address,
+            value: amountIn,
+            gas: String(this.config.gasLimit),
+            gasPrice: gasPrice
+          });
+
+        this.logger.info('交易成功', {
+          hash: tx.transactionHash,
+          gasUsed: tx.gasUsed,
+          attempt
+        });
+
+        // 记录持仓信息（用于止盈止损或快速卖出）
+        if (this.config.takeProfitEnabled || this.config.quickSellEnabled) {
+          this.holdings.set(tokenAddress, {
+            tokenAddress,
+            amount: amountOut.toString(),
+            buyPrice: new BigNumber(amountIn).dividedBy(amountOut.toString()).toString(),
+            buyTransactionHash: tx.transactionHash as string,
+            buyTimestamp: Date.now()
+          });
+          this.logger.info('已记录持仓信息', { token: tokenAddress });
+        }
+
+        // 如果启用快速卖出，设置定时卖出
+        if (this.config.quickSellEnabled) {
+          this.scheduleQuickSell(tokenAddress, amountOut.toString());
+        }
+
+        return {
+          success: true,
+          transactionHash: tx.transactionHash,
+          gasUsed: Number(tx.gasUsed),
+          amountOut: amountOut.toString()
+        };
+      } catch (error: any) {
+        this.logger.error(`购买失败 (尝试 ${attempt}/${this.MAX_RETRY_ATTEMPTS})`, { 
+          error: error.message,
+          token: tokenAddress
+        });
+        
+        // 如果不是最后一次尝试，等待后重试
+        if (attempt < this.MAX_RETRY_ATTEMPTS) {
+          const waitTime = attempt * 2000; // 指数退避：2s, 4s, 6s
+          this.logger.info(`等待 ${waitTime}ms 后重试...`);
+          await this.sleep(waitTime);
+        }
+      }
+    }
+
+    // 所有尝试都失败
+    return {
+      success: false,
+      error: '交易失败，已达到最大重试次数'
+    };
+  }
+
+  /**
+   * 获取优化的Gas价格（动态调整）
+   */
+  private async getOptimizedGasPrice(): Promise<string> {
     try {
-      this.logger.info('准备购买代币', {
-        token: tokenAddress,
-        symbol: tokenInfo.symbol,
-        amount: this.config.maxBuyAmount
-      });
-
-      // 计算最小输出（考虑滑点）
-      const amountIn = this.web3.utils.toWei(this.config.maxBuyAmount.toString(), 'ether');
-      const path = [this.config.wbnbAddress, tokenAddress];
-
-      // 获取预期输出
-      const amounts = await this.routerContract.methods.getAmountsOut(amountIn, path).call();
-      const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
-      const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
-      
-      // 应用滑点容忍度
-      const minAmountOut = new BigNumber(amountOut.toString())
-        .multipliedBy(100 - this.config.slippageTolerance)
-        .dividedBy(100)
-        .toFixed(0);
-
-      // 获取当前Gas价格
       const gasPrice = await this.web3.eth.getGasPrice();
+      
+      // 根据配置的倍数调整
       const adjustedGasPrice = new BigNumber(gasPrice.toString())
         .multipliedBy(this.config.gasPriceMultiplier)
         .toFixed(0);
 
-      // 设置交易截止时间（5分钟后）
-      const deadline = Math.floor(Date.now() / 1000) + 300;
-
-      // 执行交易
-      this.logger.info('发送交易...');
-      const tx = await this.routerContract.methods
-        .swapExactETHForTokens(
-          minAmountOut,
-          path,
-          this.account.address,
-          deadline
-        )
-        .send({
-          from: this.account.address,
-          value: amountIn,
-          gas: String(this.config.gasLimit),
-          gasPrice: adjustedGasPrice
-        });
-
-      this.logger.info('交易成功', {
-        hash: tx.transactionHash,
-        gasUsed: tx.gasUsed
-      });
-
-      // 记录持仓信息（用于止盈止损或快速卖出）
-      if (this.config.takeProfitEnabled || this.config.quickSellEnabled) {
-        this.holdings.set(tokenAddress, {
-          tokenAddress,
-          amount: amountOut.toString(),
-          buyPrice: new BigNumber(amountIn).dividedBy(amountOut.toString()).toString(),
-          buyTransactionHash: tx.transactionHash as string,
-          buyTimestamp: Date.now()
-        });
-        this.logger.info('已记录持仓信息', { token: tokenAddress });
+      // 确保不低于基础Gas价格
+      const minGasPrice = this.web3.utils.toWei('5', 'gwei');
+      if (new BigNumber(adjustedGasPrice).isLessThan(minGasPrice)) {
+        return minGasPrice;
       }
 
-      // 如果启用快速卖出，设置定时卖出
-      if (this.config.quickSellEnabled) {
-        this.scheduleQuickSell(tokenAddress, amountOut.toString());
-      }
-
-      return {
-        success: true,
-        transactionHash: tx.transactionHash,
-        gasUsed: Number(tx.gasUsed),
-        amountOut: amountOut.toString()
-      };
+      return adjustedGasPrice;
     } catch (error: any) {
-      this.logger.error('购买失败', { error: error.message });
-      return {
-        success: false,
-        error: error.message
-      };
+      this.logger.warn('获取Gas价格失败，使用默认值', { error: error.message });
+      return this.web3.utils.toWei('5', 'gwei');
     }
   }
 
@@ -461,76 +563,93 @@ export class SniperBot {
   }
 
   /**
-   * 执行卖出
+   * 执行卖出（带重试机制）
    */
   private async executeSell(tokenAddress: string, amount: string): Promise<TradeResult> {
-    try {
-      this.logger.info('准备卖出代币', { token: tokenAddress, amount });
+    for (let attempt = 1; attempt <= this.MAX_RETRY_ATTEMPTS; attempt++) {
+      try {
+        this.logger.info('准备卖出代币', { token: tokenAddress, amount, attempt });
 
-      const path = [tokenAddress, this.config.wbnbAddress];
-      
-      // 授权代币（如果需要）
-      const tokenContract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
-      const allowance = await tokenContract.methods.allowance(this.account.address, this.config.pancakeswapRouter).call();
-      
-      if (new BigNumber(String(allowance)).isLessThan(amount)) {
-        this.logger.info('授权代币...');
-        await tokenContract.methods.approve(this.config.pancakeswapRouter, amount).send({
-          from: this.account.address,
-          gas: '100000'
+        const path = [tokenAddress, this.config.wbnbAddress];
+        
+        // 授权代币（如果需要）
+        const tokenContract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
+        const allowance = await tokenContract.methods.allowance(this.account.address, this.config.pancakeswapRouter).call();
+        
+        if (new BigNumber(String(allowance)).isLessThan(amount)) {
+          this.logger.info('授权代币...');
+          await tokenContract.methods.approve(this.config.pancakeswapRouter, amount).send({
+            from: this.account.address,
+            gas: '100000'
+          });
+        }
+
+        // 获取预期输出
+        const amounts = await this.routerContract.methods.getAmountsOut(amount, path).call();
+        const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
+        const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
+        
+        // 应用滑点
+        const minAmountOut = new BigNumber(amountOut)
+          .multipliedBy(100 - this.config.slippageTolerance)
+          .dividedBy(100)
+          .toFixed(0);
+
+        // 获取优化的Gas价格
+        const adjustedGasPrice = await this.getOptimizedGasPrice();
+
+        // 设置截止时间
+        const deadline = Math.floor(Date.now() / 1000) + 300;
+
+        // 执行卖出交易
+        this.logger.info('发送卖出交易...');
+        const tx = await this.routerContract.methods
+          .swapExactTokensForETH(
+            amount,
+            minAmountOut,
+            path,
+            this.account.address,
+            deadline
+          )
+          .send({
+            from: this.account.address,
+            gas: String(this.config.gasLimit),
+            gasPrice: adjustedGasPrice
+          });
+
+        this.logger.info('卖出成功', {
+          hash: tx.transactionHash,
+          gasUsed: tx.gasUsed,
+          receivedBNB: this.web3.utils.fromWei(amountOut, 'ether'),
+          attempt
         });
+
+        return {
+          success: true,
+          transactionHash: tx.transactionHash,
+          gasUsed: Number(tx.gasUsed),
+          amountOut: amountOut
+        };
+      } catch (error: any) {
+        this.logger.error(`卖出失败 (尝试 ${attempt}/${this.MAX_RETRY_ATTEMPTS})`, { 
+          error: error.message,
+          token: tokenAddress
+        });
+        
+        // 如果不是最后一次尝试，等待后重试
+        if (attempt < this.MAX_RETRY_ATTEMPTS) {
+          const waitTime = attempt * 2000;
+          this.logger.info(`等待 ${waitTime}ms 后重试...`);
+          await this.sleep(waitTime);
+        }
       }
-
-      // 获取预期输出
-      const amounts = await this.routerContract.methods.getAmountsOut(amount, path).call();
-      const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
-      const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
-      
-      // 应用滑点
-      const minAmountOut = new BigNumber(amountOut)
-        .multipliedBy(100 - this.config.slippageTolerance)
-        .dividedBy(100)
-        .toFixed(0);
-
-      // 获取Gas价格
-      const gasPrice = await this.web3.eth.getGasPrice();
-      const adjustedGasPrice = new BigNumber(gasPrice.toString())
-        .multipliedBy(this.config.gasPriceMultiplier)
-        .toFixed(0);
-
-      const deadline = Math.floor(Date.now() / 1000) + 300;
-
-      // 执行卖出
-      const tx = await this.routerContract.methods
-        .swapExactTokensForETH(
-          amount,
-          minAmountOut,
-          path,
-          this.account.address,
-          deadline
-        )
-        .send({
-          from: this.account.address,
-          gas: String(this.config.gasLimit),
-          gasPrice: adjustedGasPrice
-        });
-
-      this.logger.info('卖出成功', {
-        hash: tx.transactionHash,
-        amountReceived: this.web3.utils.fromWei(amountOut, 'ether') + ' BNB'
-      });
-
-      return {
-        success: true,
-        transactionHash: tx.transactionHash
-      };
-    } catch (error: any) {
-      this.logger.error('卖出失败', { error: error.message });
-      return {
-        success: false,
-        error: error.message
-      };
     }
+
+    // 所有尝试都失败
+    return {
+      success: false,
+      error: '卖出失败，已达到最大重试次数'
+    };
   }
 
   /**
