@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BSC Defensive Bot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <h1 class="logo">🛡️ BSC Bot</h1>
+      <nav>
+        <button class="nav-btn active" data-page="dashboard">
+          <span>📊</span> Dashboard
+        </button>
+        <button class="nav-btn" data-page="transactions">
+          <span>💳</span> Transactions
+        </button>
+        <button class="nav-btn" data-page="settings">
+          <span>⚙️</span> Settings
+        </button>
+        <button class="nav-btn" data-page="whitelist">
+          <span>✅</span> Whitelist
+        </button>
+        <button class="nav-btn" data-page="blacklist">
+          <span>🚫</span> Blacklist
+        </button>
+        <button class="nav-btn" data-page="logs">
+          <span>📝</span> Logs
+        </button>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <h2 id="page-title">Dashboard</h2>
+          <div class="status-indicator">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Stopped</span>
+          </div>
+        </div>
+        <div class="header-right">
+          <button id="start-btn" class="btn btn-success">▶️ Start Bot</button>
+          <button id="stop-btn" class="btn btn-danger" disabled>⏹️ Stop Bot</button>
+        </div>
+      </header>
+
+      <!-- Dashboard Page -->
+      <div id="dashboard-page" class="page active">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Wallet Balance</div>
+            <div class="stat-value" id="wallet-balance">0 BNB</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Monitored Tokens</div>
+            <div class="stat-value" id="monitored-tokens">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total Transactions</div>
+            <div class="stat-value" id="total-transactions">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Network</div>
+            <div class="stat-value" id="network">-</div>
+          </div>
+        </div>
+
+        <div class="info-section">
+          <h3>Wallet Information</h3>
+          <div class="info-row">
+            <span class="info-label">Address:</span>
+            <span class="info-value" id="wallet-address">Not configured</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Last Update:</span>
+            <span class="info-value" id="last-update">-</span>
+          </div>
+        </div>
+
+        <div class="events-section">
+          <h3>Recent Events</h3>
+          <div id="recent-events" class="events-list">
+            <p class="no-data">No events yet</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transactions Page -->
+      <div id="transactions-page" class="page">
+        <div class="transactions-section">
+          <h3>Transaction History</h3>
+          <div id="transactions-list" class="transactions-list">
+            <p class="no-data">No transactions yet</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Page -->
+      <div id="settings-page" class="page">
+        <div class="settings-section">
+          <h3>Network Configuration</h3>
+          <div class="form-group">
+            <label>Network:</label>
+            <select id="network-select" class="form-control">
+              <option value="mainnet">Mainnet</option>
+              <option value="testnet">Testnet</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Wallet Address:</label>
+            <input type="text" id="wallet-address-input" class="form-control" placeholder="0x...">
+          </div>
+          <div class="form-group">
+            <label>Private Key:</label>
+            <input type="password" id="private-key-input" class="form-control" placeholder="Enter private key">
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Trading Parameters</h3>
+          <div class="form-group">
+            <label>Buy Threshold (%):</label>
+            <input type="number" id="buy-threshold-input" class="form-control" min="1" max="100" value="10">
+            <small>Trigger sell when buy exceeds this % of liquidity</small>
+          </div>
+          <div class="form-group">
+            <label>Gas Price Multiplier:</label>
+            <input type="number" id="gas-multiplier-input" class="form-control" min="1" max="5" step="0.1" value="1.5">
+            <small>Priority gas multiplier for defensive sells</small>
+          </div>
+          <div class="form-group">
+            <label>Slippage Tolerance (%):</label>
+            <input type="number" id="slippage-input" class="form-control" min="1" max="50" value="5">
+          </div>
+          <div class="form-group">
+            <label>Poll Interval (ms):</label>
+            <input type="number" id="poll-interval-input" class="form-control" min="1000" max="30000" value="5000">
+          </div>
+        </div>
+
+        <button id="save-settings-btn" class="btn btn-primary">💾 Save Settings</button>
+      </div>
+
+      <!-- Whitelist Page -->
+      <div id="whitelist-page" class="page">
+        <div class="list-section">
+          <h3>Whitelisted Addresses</h3>
+          <div class="form-group">
+            <input type="text" id="whitelist-input" class="form-control" placeholder="Enter address to whitelist">
+            <button id="add-whitelist-btn" class="btn btn-primary">Add to Whitelist</button>
+          </div>
+          <div id="whitelist-items" class="list-items">
+            <p class="no-data">No whitelisted addresses</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Blacklist Page -->
+      <div id="blacklist-page" class="page">
+        <div class="list-section">
+          <h3>Blacklisted Addresses</h3>
+          <div class="form-group">
+            <input type="text" id="blacklist-input" class="form-control" placeholder="Enter address to blacklist">
+            <button id="add-blacklist-btn" class="btn btn-primary">Add to Blacklist</button>
+          </div>
+          <div id="blacklist-items" class="list-items">
+            <p class="no-data">No blacklisted addresses</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Logs Page -->
+      <div id="logs-page" class="page">
+        <div class="logs-section">
+          <div class="logs-header">
+            <h3>System Logs</h3>
+            <button id="refresh-logs-btn" class="btn btn-secondary">🔄 Refresh</button>
+          </div>
+          <div id="logs-container" class="logs-container">
+            <p class="no-data">No logs available</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
