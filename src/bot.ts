@@ -125,6 +125,7 @@ export class SniperBot {
       });
 
       for (const event of events) {
+        if (typeof event === 'string') continue;
         const { token0, token1, pair } = event.returnValues;
         
         // 检查是否已处理过此交易对
@@ -209,10 +210,10 @@ export class SniperBot {
 
     return {
       address: tokenAddress,
-      name: name as string,
-      symbol: symbol as string,
+      name: String(name),
+      symbol: String(symbol),
       decimals: Number(decimals),
-      totalSupply: totalSupply as string
+      totalSupply: String(totalSupply)
     };
   }
 
@@ -228,11 +229,13 @@ export class SniperBot {
       pairContract.methods.token1().call()
     ]);
 
+    const reservesData = reserves as any;
+
     return {
-      token0: token0 as string,
-      token1: token1 as string,
-      reserve0: reserves._reserve0.toString(),
-      reserve1: reserves._reserve1.toString(),
+      token0: String(token0),
+      token1: String(token1),
+      reserve0: String(reservesData._reserve0 || reservesData[0]),
+      reserve1: String(reservesData._reserve1 || reservesData[1]),
       pairAddress
     };
   }
@@ -262,7 +265,8 @@ export class SniperBot {
 
       // 获取预期输出
       const amounts = await this.routerContract.methods.getAmountsOut(amountIn, path).call();
-      const amountOut = amounts[1];
+      const amountsArray = amounts as any[];
+      const amountOut = amountsArray[1];
       
       // 应用滑点容忍度
       const minAmountOut = new BigNumber(amountOut.toString())
@@ -291,7 +295,7 @@ export class SniperBot {
         .send({
           from: this.account.address,
           value: amountIn,
-          gas: this.config.gasLimit,
+          gas: String(this.config.gasLimit),
           gasPrice: adjustedGasPrice
         });
 
