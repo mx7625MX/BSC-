@@ -1,0 +1,33 @@
+{
+  "name": "bsc-meme-sniper-bot",
+  "version": "1.0.0",
+  "description": "BSC链MEME币阻击机器人 - 自动监控和购买新上线的代币",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "echo \"Tests not implemented yet\" && exit 0"
+  },
+  "keywords": [
+    "bsc",
+    "binance-smart-chain",
+    "meme-coin",
+    "sniper-bot",
+    "pancakeswap",
+    "crypto-trading"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "web3": "^4.3.0",
+    "dotenv": "^16.3.1",
+    "winston": "^3.11.0",
+    "bignumber.js": "^9.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
+  }
+}
