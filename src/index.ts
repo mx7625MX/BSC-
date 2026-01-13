@@ -33,6 +33,18 @@ async function main() {
     logger.info(`滑点容忍度: ${config.slippageTolerance}%`);
     logger.info(`自动交易: ${config.autoTradeEnabled ? '已启用' : '未启用'}`);
     
+    if (config.takeProfitEnabled) {
+      logger.info(`止盈止损: 已启用`);
+      logger.info(`  - 止盈: ${config.takeProfitPercent}%`);
+      logger.info(`  - 止损: ${config.stopLossPercent}%`);
+    }
+    
+    if (config.copyTradeEnabled) {
+      logger.info(`钱包跟单: 已启用`);
+      logger.info(`  - 监控钱包: ${config.monitoredWallets.length} 个`);
+      logger.info(`  - 跟单金额: ${config.copyTradeAmount > 0 ? config.copyTradeAmount + ' BNB' : '按倍数 ' + config.copyTradeMultiplier + 'x'}`);
+    }
+    
     if (config.tokenWhitelist.length > 0) {
       logger.info(`白名单模式: ${config.tokenWhitelist.length} 个代币`);
     }

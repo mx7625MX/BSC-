@@ -24,6 +24,18 @@ export interface BotConfig {
   tokenWhitelist: string[];
   minTokenHolderPercent: number;
   
+  // 止盈配置
+  takeProfitEnabled: boolean;
+  takeProfitPercent: number;
+  stopLossPercent: number;
+  checkProfitInterval: number;
+  
+  // 钱包跟单配置
+  copyTradeEnabled: boolean;
+  monitoredWallets: string[];
+  copyTradeAmount: number;
+  copyTradeMultiplier: number;
+  
   // 日志配置
   logLevel: string;
 }
@@ -50,4 +62,12 @@ export interface TradeResult {
   error?: string;
   gasUsed?: number;
   amountOut?: string;
+}
+
+export interface HoldingInfo {
+  tokenAddress: string;
+  amount: string;
+  buyPrice: string;
+  buyTransactionHash: string;
+  buyTimestamp: number;
 }

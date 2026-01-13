@@ -1,7 +1,7 @@
 import Web3 from 'web3';
 import { Contract } from 'web3-eth-contract';
 import BigNumber from 'bignumber.js';
-import { BotConfig, TokenInfo, LiquidityInfo, TradeResult } from './types';
+import { BotConfig, TokenInfo, LiquidityInfo, TradeResult, HoldingInfo } from './types';
 import { Logger } from './logger';
 import {
   PANCAKESWAP_ROUTER_ABI,
@@ -24,6 +24,8 @@ export class SniperBot {
   private routerContract: Contract<any>;
   private factoryContract: Contract<any>;
   private processedPairs: Set<string>;
+  private holdings: Map<string, HoldingInfo>;
+  private processedTransactions: Set<string>;
   private isRunning: boolean;
 
   constructor(config: BotConfig, logger: Logger) {
@@ -31,6 +33,8 @@ export class SniperBot {
     this.logger = logger;
     this.web3 = new Web3(config.bscRpcUrl);
     this.processedPairs = new Set();
+    this.holdings = new Map();
+    this.processedTransactions = new Set();
     this.isRunning = false;
 
     // 设置账户
@@ -65,6 +69,20 @@ export class SniperBot {
 
     // 检查账户余额
     await this.checkBalance();
+
+    // 启动止盈止损监控
+    if (this.config.takeProfitEnabled) {
+      this.logger.info('启动止盈止损监控...');
+      this.startProfitMonitoring();
+    }
+
+    // 启动钱包跟单监控
+    if (this.config.copyTradeEnabled) {
+      this.logger.info('启动钱包跟单监控...', {
+        wallets: this.config.monitoredWallets
+      });
+      this.startCopyTrading();
+    }
 
     // 监听新交易对创建事件
     await this.monitorNewPairs();
@@ -311,6 +329,18 @@ export class SniperBot {
         gasUsed: tx.gasUsed
       });
 
+      // 记录持仓信息（用于止盈止损）
+      if (this.config.takeProfitEnabled) {
+        this.holdings.set(tokenAddress, {
+          tokenAddress,
+          amount: amountOut.toString(),
+          buyPrice: new BigNumber(amountIn).dividedBy(amountOut.toString()).toString(),
+          buyTransactionHash: tx.transactionHash as string,
+          buyTimestamp: Date.now()
+        });
+        this.logger.info('已记录持仓信息', { token: tokenAddress });
+      }
+
       return {
         success: true,
         transactionHash: tx.transactionHash,
@@ -349,5 +379,242 @@ export class SniperBot {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 启动止盈止损监控
+   */
+  private startProfitMonitoring(): void {
+    setInterval(async () => {
+      if (!this.isRunning) return;
+
+      for (const [tokenAddress, holding] of this.holdings.entries()) {
+        try {
+          await this.checkAndExecuteProfitTaking(tokenAddress, holding);
+        } catch (error: any) {
+          this.logger.error('检查止盈止损时出错', { error: error.message, token: tokenAddress });
+        }
+      }
+    }, this.config.checkProfitInterval);
+  }
+
+  /**
+   * 检查并执行止盈止损
+   */
+  private async checkAndExecuteProfitTaking(tokenAddress: string, holding: HoldingInfo): Promise<void> {
+    // 获取当前价格
+    const path = [tokenAddress, this.config.wbnbAddress];
+    
+    try {
+      const amounts = await this.routerContract.methods.getAmountsOut(holding.amount, path).call();
+      const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
+      const currentValueBNB = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
+
+      // 计算投入的BNB
+      const investedBNB = new BigNumber(holding.amount).multipliedBy(holding.buyPrice);
+      const currentValue = new BigNumber(currentValueBNB);
+
+      // 计算盈亏百分比
+      const profitPercent = currentValue.minus(investedBNB).dividedBy(investedBNB).multipliedBy(100);
+
+      this.logger.debug('持仓检查', {
+        token: tokenAddress,
+        profitPercent: profitPercent.toFixed(2) + '%',
+        invested: investedBNB.toString(),
+        current: currentValue.toString()
+      });
+
+      // 检查是否触发止盈
+      if (profitPercent.isGreaterThanOrEqualTo(this.config.takeProfitPercent)) {
+        this.logger.info('触发止盈！', {
+          token: tokenAddress,
+          profitPercent: profitPercent.toFixed(2) + '%'
+        });
+        await this.executeSell(tokenAddress, holding.amount);
+        this.holdings.delete(tokenAddress);
+      }
+      // 检查是否触发止损
+      else if (profitPercent.isLessThanOrEqualTo(-this.config.stopLossPercent)) {
+        this.logger.info('触发止损！', {
+          token: tokenAddress,
+          lossPercent: profitPercent.toFixed(2) + '%'
+        });
+        await this.executeSell(tokenAddress, holding.amount);
+        this.holdings.delete(tokenAddress);
+      }
+    } catch (error: any) {
+      this.logger.error('获取代币价格失败', { error: error.message, token: tokenAddress });
+    }
+  }
+
+  /**
+   * 执行卖出
+   */
+  private async executeSell(tokenAddress: string, amount: string): Promise<TradeResult> {
+    try {
+      this.logger.info('准备卖出代币', { token: tokenAddress, amount });
+
+      const path = [tokenAddress, this.config.wbnbAddress];
+      
+      // 授权代币（如果需要）
+      const tokenContract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
+      const allowance = await tokenContract.methods.allowance(this.account.address, this.config.pancakeswapRouter).call();
+      
+      if (new BigNumber(String(allowance)).isLessThan(amount)) {
+        this.logger.info('授权代币...');
+        await tokenContract.methods.approve(this.config.pancakeswapRouter, amount).send({
+          from: this.account.address,
+          gas: '100000'
+        });
+      }
+
+      // 获取预期输出
+      const amounts = await this.routerContract.methods.getAmountsOut(amount, path).call();
+      const amountsArray = Array.isArray(amounts) ? amounts : [amounts];
+      const amountOut = amountsArray.length > 1 ? String(amountsArray[1]) : '0';
+      
+      // 应用滑点
+      const minAmountOut = new BigNumber(amountOut)
+        .multipliedBy(100 - this.config.slippageTolerance)
+        .dividedBy(100)
+        .toFixed(0);
+
+      // 获取Gas价格
+      const gasPrice = await this.web3.eth.getGasPrice();
+      const adjustedGasPrice = new BigNumber(gasPrice.toString())
+        .multipliedBy(this.config.gasPriceMultiplier)
+        .toFixed(0);
+
+      const deadline = Math.floor(Date.now() / 1000) + 300;
+
+      // 执行卖出
+      const tx = await this.routerContract.methods
+        .swapExactTokensForETH(
+          amount,
+          minAmountOut,
+          path,
+          this.account.address,
+          deadline
+        )
+        .send({
+          from: this.account.address,
+          gas: String(this.config.gasLimit),
+          gasPrice: adjustedGasPrice
+        });
+
+      this.logger.info('卖出成功', {
+        hash: tx.transactionHash,
+        amountReceived: this.web3.utils.fromWei(amountOut, 'ether') + ' BNB'
+      });
+
+      return {
+        success: true,
+        transactionHash: tx.transactionHash
+      };
+    } catch (error: any) {
+      this.logger.error('卖出失败', { error: error.message });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * 启动钱包跟单监控
+   */
+  private startCopyTrading(): void {
+    this.logger.info('开始监控目标钱包交易...');
+    
+    setInterval(async () => {
+      if (!this.isRunning) return;
+
+      for (const wallet of this.config.monitoredWallets) {
+        try {
+          await this.monitorWalletTransactions(wallet);
+        } catch (error: any) {
+          this.logger.error('监控钱包交易时出错', { error: error.message, wallet });
+        }
+      }
+    }, this.config.monitorInterval);
+  }
+
+  /**
+   * 监控钱包交易
+   */
+  private async monitorWalletTransactions(walletAddress: string): Promise<void> {
+    try {
+      // 获取最新区块
+      const currentBlock = await this.web3.eth.getBlockNumber();
+      const block = await this.web3.eth.getBlock(currentBlock, true);
+
+      if (!block || !block.transactions) return;
+
+      for (const tx of block.transactions) {
+        if (typeof tx === 'string') continue;
+
+        // 检查是否是目标钱包的交易
+        if (tx.from.toLowerCase() !== walletAddress) continue;
+
+        // 检查是否已处理过此交易
+        if (this.processedTransactions.has(tx.hash)) continue;
+
+        // 检查是否是PancakeSwap Router交易
+        if (tx.to?.toLowerCase() !== this.config.pancakeswapRouter.toLowerCase()) continue;
+
+        this.processedTransactions.add(tx.hash);
+
+        // 解析交易以获取购买的代币
+        await this.analyzeCopyTrade(tx);
+      }
+    } catch (error: any) {
+      this.logger.debug('监控钱包交易时出错', { error: error.message });
+    }
+  }
+
+  /**
+   * 分析并复制交易
+   */
+  private async analyzeCopyTrade(tx: any): Promise<void> {
+    try {
+      // 解析交易输入数据
+      const inputData = tx.input;
+      
+      // 检查是否是swap交易（简化版本，实际需要更复杂的ABI解析）
+      if (inputData.includes('7ff36ab5') || inputData.includes('18cbafe5')) {
+        this.logger.info('检测到目标钱包购买交易', {
+          from: tx.from,
+          hash: tx.hash,
+          value: this.web3.utils.fromWei(tx.value.toString(), 'ether') + ' BNB'
+        });
+
+        // 获取购买金额
+        const buyAmountBNB = parseFloat(this.web3.utils.fromWei(tx.value.toString(), 'ether'));
+
+        // 计算跟单金额
+        let copyAmount = this.config.copyTradeAmount;
+        if (copyAmount === 0) {
+          // 如果没有设置固定金额，使用倍数
+          copyAmount = buyAmountBNB * this.config.copyTradeMultiplier;
+        }
+
+        // 限制最大跟单金额
+        copyAmount = Math.min(copyAmount, this.config.maxBuyAmount);
+
+        this.logger.info('准备跟单', {
+          originalAmount: buyAmountBNB,
+          copyAmount,
+          multiplier: this.config.copyTradeMultiplier
+        });
+
+        // 这里需要从交易中解析出代币地址
+        // 由于需要复杂的ABI解析，这里仅作示例
+        // 实际使用时需要完整的交易解析逻辑
+        
+        this.logger.warn('跟单功能需要完整的交易解析，当前为示例代码');
+      }
+    } catch (error: any) {
+      this.logger.error('分析跟单交易时出错', { error: error.message });
+    }
   }
 }

@@ -30,6 +30,18 @@ export function loadConfig(): BotConfig {
     tokenWhitelist: process.env.TOKEN_WHITELIST ? process.env.TOKEN_WHITELIST.split(',').map(addr => addr.trim()) : [],
     minTokenHolderPercent: parseFloat(process.env.MIN_TOKEN_HOLDER_PERCENT || '0.1'),
     
+    // 止盈配置
+    takeProfitEnabled: process.env.TAKE_PROFIT_ENABLED === 'true',
+    takeProfitPercent: parseFloat(process.env.TAKE_PROFIT_PERCENT || '50'),
+    stopLossPercent: parseFloat(process.env.STOP_LOSS_PERCENT || '30'),
+    checkProfitInterval: parseInt(process.env.CHECK_PROFIT_INTERVAL || '60000'),
+    
+    // 钱包跟单配置
+    copyTradeEnabled: process.env.COPY_TRADE_ENABLED === 'true',
+    monitoredWallets: process.env.MONITORED_WALLETS ? process.env.MONITORED_WALLETS.split(',').map(addr => addr.trim().toLowerCase()) : [],
+    copyTradeAmount: parseFloat(process.env.COPY_TRADE_AMOUNT || '0.05'),
+    copyTradeMultiplier: parseFloat(process.env.COPY_TRADE_MULTIPLIER || '1.0'),
+    
     // 日志配置
     logLevel: process.env.LOG_LEVEL || 'info',
   };
