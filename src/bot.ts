@@ -823,4 +823,34 @@ export class SniperBot {
       }
     }, randomDelay);
   }
+
+  /**
+   * 获取机器人状态（用于Web界面）
+   */
+  getStatus() {
+    const holdings = Array.from(this.holdings.entries()).map(([tokenAddress, holding]) => ({
+      tokenAddress,
+      amount: holding.amount,
+      buyPrice: holding.buyPrice,
+      currentProfit: '0', // 需要实时计算
+      buyTimestamp: holding.buyTimestamp
+    }));
+
+    return {
+      isRunning: this.isRunning,
+      accountAddress: this.account.address,
+      accountBalance: '0', // 需要异步获取
+      processedPairs: this.processedPairs.size,
+      holdings,
+      config: {
+        autoTradeEnabled: this.config.autoTradeEnabled,
+        takeProfitEnabled: this.config.takeProfitEnabled,
+        quickSellEnabled: this.config.quickSellEnabled,
+        copyTradeEnabled: this.config.copyTradeEnabled,
+        sellOnBuyVolumeEnabled: this.config.sellOnBuyVolumeEnabled,
+        maxBuyAmount: this.config.maxBuyAmount,
+        minLiquidityBnb: this.config.minLiquidityBnb,
+      }
+    };
+  }
 }

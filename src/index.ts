@@ -1,6 +1,7 @@
 import { loadConfig } from './config';
 import { Logger } from './logger';
 import { SniperBot } from './bot';
+import { WebServer } from './webServer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -78,16 +79,49 @@ async function main() {
     // 创建并启动机器人
     const bot = new SniperBot(config, logger);
     
+    // 创建并启动Web服务器
+    const webServer = new WebServer(3000);
+    webServer.setBotInstance(bot);
+    
+    // 将日志输出同步到Web界面
+    const originalInfo = logger.info.bind(logger);
+    const originalWarn = logger.warn.bind(logger);
+    const originalError = logger.error.bind(logger);
+    
+    logger.info = (...args: any[]) => {
+      originalInfo(...args);
+      const message = typeof args[0] === 'string' ? args[0] : JSON.stringify(args[0]);
+      webServer.addLog(`[INFO] ${message}`);
+    };
+    
+    logger.warn = (...args: any[]) => {
+      originalWarn(...args);
+      const message = typeof args[0] === 'string' ? args[0] : JSON.stringify(args[0]);
+      webServer.addLog(`[WARN] ${message}`);
+    };
+    
+    logger.error = (...args: any[]) => {
+      originalError(...args);
+      const message = typeof args[0] === 'string' ? args[0] : JSON.stringify(args[0]);
+      webServer.addLog(`[ERROR] ${message}`);
+    };
+    
+    // 启动Web服务器
+    webServer.start();
+    logger.info('Web控制面板已启动: http://localhost:3000');
+    
     // 处理退出信号
     process.on('SIGINT', () => {
       logger.info('\n收到退出信号，正在停止机器人...');
       bot.stop();
+      webServer.stop();
       process.exit(0);
     });
 
     process.on('SIGTERM', () => {
       logger.info('\n收到终止信号，正在停止机器人...');
       bot.stop();
+      webServer.stop();
       process.exit(0);
     });
 
