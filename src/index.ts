@@ -39,6 +39,11 @@ async function main() {
       logger.info(`  - 止损: ${config.stopLossPercent}%`);
     }
     
+    if (config.sellOnBuyVolumeEnabled) {
+      logger.info(`买入量触发卖出: 已启用`);
+      logger.info(`  - 触发阈值: ${config.sellOnBuyVolumeThreshold} BNB`);
+    }
+    
     if (config.copyTradeEnabled) {
       logger.info(`钱包跟单: 已启用`);
       logger.info(`  - 监控钱包: ${config.monitoredWallets.length} 个`);

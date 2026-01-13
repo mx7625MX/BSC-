@@ -36,6 +36,10 @@ export function loadConfig(): BotConfig {
     stopLossPercent: parseFloat(process.env.STOP_LOSS_PERCENT || '30'),
     checkProfitInterval: parseInt(process.env.CHECK_PROFIT_INTERVAL || '60000'),
     
+    // 卖出触发配置
+    sellOnBuyVolumeEnabled: process.env.SELL_ON_BUY_VOLUME_ENABLED === 'true',
+    sellOnBuyVolumeThreshold: parseFloat(process.env.SELL_ON_BUY_VOLUME_THRESHOLD || '1.0'),
+    
     // 钱包跟单配置
     copyTradeEnabled: process.env.COPY_TRADE_ENABLED === 'true',
     monitoredWallets: process.env.MONITORED_WALLETS ? process.env.MONITORED_WALLETS.split(',').map(addr => addr.trim().toLowerCase()) : [],

@@ -30,6 +30,10 @@ export interface BotConfig {
   stopLossPercent: number;
   checkProfitInterval: number;
   
+  // 卖出触发配置
+  sellOnBuyVolumeEnabled: boolean;
+  sellOnBuyVolumeThreshold: number;
+  
   // 钱包跟单配置
   copyTradeEnabled: boolean;
   monitoredWallets: string[];

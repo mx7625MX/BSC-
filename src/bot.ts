@@ -76,6 +76,14 @@ export class SniperBot {
       this.startProfitMonitoring();
     }
 
+    // 启动买入量监控（触发卖出）
+    if (this.config.sellOnBuyVolumeEnabled) {
+      this.logger.info('启动买入量监控...', {
+        threshold: this.config.sellOnBuyVolumeThreshold + ' BNB'
+      });
+      this.startBuyVolumeMonitoring();
+    }
+
     // 启动钱包跟单监控
     if (this.config.copyTradeEnabled) {
       this.logger.info('启动钱包跟单监控...', {
@@ -615,6 +623,145 @@ export class SniperBot {
       }
     } catch (error: any) {
       this.logger.error('分析跟单交易时出错', { error: error.message });
+    }
+  }
+
+  /**
+   * 启动买入量监控（触发卖出）
+   */
+  private startBuyVolumeMonitoring(): void {
+    this.logger.info('开始监控买入量触发卖出...');
+    
+    setInterval(async () => {
+      if (!this.isRunning) return;
+
+      try {
+        // 获取最新区块
+        const currentBlock = await this.web3.eth.getBlockNumber();
+        const block = await this.web3.eth.getBlock(currentBlock, true);
+
+        if (!block || !block.transactions) return;
+
+        for (const tx of block.transactions) {
+          if (typeof tx === 'string') continue;
+
+          // 跳过自己的交易
+          if (tx.from.toLowerCase() === this.account.address.toLowerCase()) continue;
+
+          // 检查是否是PancakeSwap Router交易
+          if (tx.to?.toLowerCase() !== this.config.pancakeswapRouter.toLowerCase()) continue;
+
+          // 检查是否已处理过此交易
+          if (this.processedTransactions.has(tx.hash)) continue;
+
+          // 分析买入量并触发卖出
+          await this.checkBuyVolumeAndSell(tx);
+        }
+      } catch (error: any) {
+        this.logger.debug('监控买入量时出错', { error: error.message });
+      }
+    }, this.config.monitorInterval);
+  }
+
+  /**
+   * 检查买入量并触发卖出
+   */
+  private async checkBuyVolumeAndSell(tx: any): Promise<void> {
+    try {
+      // 解析交易输入数据
+      const inputData = tx.input;
+      
+      // 检查是否是买入交易（swapExactETHForTokens）
+      if (!inputData.includes('7ff36ab5') && !inputData.includes('18cbafe5')) {
+        return;
+      }
+
+      this.processedTransactions.add(tx.hash);
+
+      // 获取购买金额
+      const buyAmountWei = tx.value;
+      const buyAmountBNB = parseFloat(this.web3.utils.fromWei(buyAmountWei.toString(), 'ether'));
+
+      // 检查是否超过阈值
+      if (buyAmountBNB < this.config.sellOnBuyVolumeThreshold) {
+        return;
+      }
+
+      this.logger.info('检测到大额买入，超过阈值！', {
+        from: tx.from,
+        amount: buyAmountBNB + ' BNB',
+        threshold: this.config.sellOnBuyVolumeThreshold + ' BNB',
+        hash: tx.hash
+      });
+
+      // 尝试从交易中解析代币地址
+      // 这是简化版本，实际应该完整解析ABI
+      const tokenAddress = await this.parseTokenFromTx(tx);
+      
+      if (!tokenAddress) {
+        this.logger.warn('无法解析代币地址，跳过卖出');
+        return;
+      }
+
+      // 检查是否持有该代币
+      const holding = this.holdings.get(tokenAddress.toLowerCase());
+      
+      if (!holding) {
+        this.logger.debug('未持有该代币，无需卖出', { token: tokenAddress });
+        return;
+      }
+
+      this.logger.info('触发自动卖出！', {
+        token: tokenAddress,
+        reason: `检测到${buyAmountBNB} BNB大额买入`,
+        holdingAmount: holding.amount
+      });
+
+      // 执行卖出
+      const result = await this.executeSell(tokenAddress, holding.amount);
+      
+      if (result.success) {
+        this.holdings.delete(tokenAddress.toLowerCase());
+        this.logger.info('大额买入触发卖出成功', {
+          token: tokenAddress,
+          hash: result.transactionHash
+        });
+      }
+    } catch (error: any) {
+      this.logger.error('检查买入量触发卖出时出错', { error: error.message });
+    }
+  }
+
+  /**
+   * 从交易中解析代币地址（简化版本）
+   */
+  private async parseTokenFromTx(tx: any): Promise<string | null> {
+    try {
+      // 这是一个简化的实现
+      // 实际应该使用完整的ABI解析
+      // 这里我们尝试从交易事件中获取代币地址
+      
+      const receipt = await this.web3.eth.getTransactionReceipt(tx.hash);
+      
+      if (!receipt || !receipt.logs || receipt.logs.length === 0) {
+        return null;
+      }
+
+      // 查找Transfer事件（通常是最后一个）
+      // Transfer事件的signature是: Transfer(address,address,uint256)
+      const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+      
+      for (const log of receipt.logs) {
+        if (log.topics && log.topics[0] === transferTopic) {
+          // log.address 就是代币地址
+          return log.address || null;
+        }
+      }
+
+      return null;
+    } catch (error: any) {
+      this.logger.error('解析代币地址时出错', { error: error.message });
+      return null;
     }
   }
 }
