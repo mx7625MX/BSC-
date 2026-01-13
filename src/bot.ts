@@ -337,8 +337,8 @@ export class SniperBot {
         gasUsed: tx.gasUsed
       });
 
-      // 记录持仓信息（用于止盈止损）
-      if (this.config.takeProfitEnabled) {
+      // 记录持仓信息（用于止盈止损或快速卖出）
+      if (this.config.takeProfitEnabled || this.config.quickSellEnabled) {
         this.holdings.set(tokenAddress, {
           tokenAddress,
           amount: amountOut.toString(),
@@ -347,6 +347,11 @@ export class SniperBot {
           buyTimestamp: Date.now()
         });
         this.logger.info('已记录持仓信息', { token: tokenAddress });
+      }
+
+      // 如果启用快速卖出，设置定时卖出
+      if (this.config.quickSellEnabled) {
+        this.scheduleQuickSell(tokenAddress, amountOut.toString());
       }
 
       return {
@@ -763,5 +768,59 @@ export class SniperBot {
       this.logger.error('解析代币地址时出错', { error: error.message });
       return null;
     }
+  }
+
+  /**
+   * 设置快速卖出定时器
+   */
+  private scheduleQuickSell(tokenAddress: string, amount: string): void {
+    // 计算随机延迟时间（在最小和最大延迟之间）
+    const delayRange = this.config.quickSellDelayMax - this.config.quickSellDelayMin;
+    const randomDelay = this.config.quickSellDelayMin + Math.floor(Math.random() * delayRange);
+    
+    this.logger.info('已设置快速卖出', {
+      token: tokenAddress,
+      delay: randomDelay + 'ms',
+      minDelay: this.config.quickSellDelayMin + 'ms',
+      maxDelay: this.config.quickSellDelayMax + 'ms'
+    });
+
+    // 设置定时器
+    setTimeout(async () => {
+      try {
+        // 检查是否还持有该代币（可能已被其他功能卖出）
+        const holding = this.holdings.get(tokenAddress.toLowerCase());
+        
+        if (!holding) {
+          this.logger.info('快速卖出取消：代币已被卖出', { token: tokenAddress });
+          return;
+        }
+
+        this.logger.info('执行快速卖出', {
+          token: tokenAddress,
+          amount: holding.amount,
+          actualDelay: randomDelay + 'ms'
+        });
+
+        // 执行卖出
+        const result = await this.executeSell(tokenAddress, holding.amount);
+        
+        if (result.success) {
+          this.holdings.delete(tokenAddress.toLowerCase());
+          this.logger.info('快速卖出成功', {
+            token: tokenAddress,
+            hash: result.transactionHash,
+            delay: randomDelay + 'ms'
+          });
+        } else {
+          this.logger.error('快速卖出失败', {
+            token: tokenAddress,
+            error: result.error
+          });
+        }
+      } catch (error: any) {
+        this.logger.error('快速卖出过程出错', { error: error.message, token: tokenAddress });
+      }
+    }, randomDelay);
   }
 }

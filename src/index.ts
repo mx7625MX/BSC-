@@ -39,6 +39,11 @@ async function main() {
       logger.info(`  - 止损: ${config.stopLossPercent}%`);
     }
     
+    if (config.quickSellEnabled) {
+      logger.info(`快速卖出: 已启用`);
+      logger.info(`  - 延迟范围: ${config.quickSellDelayMin}-${config.quickSellDelayMax}ms`);
+    }
+    
     if (config.sellOnBuyVolumeEnabled) {
       logger.info(`买入量触发卖出: 已启用`);
       logger.info(`  - 触发阈值: ${config.sellOnBuyVolumeThreshold} BNB`);

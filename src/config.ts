@@ -40,6 +40,11 @@ export function loadConfig(): BotConfig {
     sellOnBuyVolumeEnabled: process.env.SELL_ON_BUY_VOLUME_ENABLED === 'true',
     sellOnBuyVolumeThreshold: parseFloat(process.env.SELL_ON_BUY_VOLUME_THRESHOLD || '1.0'),
     
+    // 快速卖出配置
+    quickSellEnabled: process.env.QUICK_SELL_ENABLED === 'true',
+    quickSellDelayMin: parseInt(process.env.QUICK_SELL_DELAY_MIN || '1000'),
+    quickSellDelayMax: parseInt(process.env.QUICK_SELL_DELAY_MAX || '5000'),
+    
     // 钱包跟单配置
     copyTradeEnabled: process.env.COPY_TRADE_ENABLED === 'true',
     monitoredWallets: process.env.MONITORED_WALLETS ? process.env.MONITORED_WALLETS.split(',').map(addr => addr.trim().toLowerCase()) : [],

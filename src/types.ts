@@ -34,6 +34,11 @@ export interface BotConfig {
   sellOnBuyVolumeEnabled: boolean;
   sellOnBuyVolumeThreshold: number;
   
+  // 快速卖出配置
+  quickSellEnabled: boolean;
+  quickSellDelayMin: number;
+  quickSellDelayMax: number;
+  
   // 钱包跟单配置
   copyTradeEnabled: boolean;
   monitoredWallets: string[];
