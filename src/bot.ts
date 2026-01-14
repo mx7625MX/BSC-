@@ -34,6 +34,7 @@ export class SniperBot {
   private gasPriceCache: { price: string; timestamp: number } | null = null;
   private readonly GAS_CACHE_TTL = 5000; // Gas价格缓存5秒
   private approvedTokens: Set<string> = new Set(); // 已授权的代币
+  private sellLocks: Map<string, boolean> = new Map(); // 卖出锁，防止并发卖出冲突
 
   constructor(config: BotConfig, logger: Logger) {
     this.config = config;
@@ -585,9 +586,24 @@ export class SniperBot {
    * 执行卖出（带重试机制）
    */
   private async executeSell(tokenAddress: string, amount: string): Promise<TradeResult> {
-    for (let attempt = 1; attempt <= this.MAX_RETRY_ATTEMPTS; attempt++) {
-      try {
-        this.logger.info('准备卖出代币', { token: tokenAddress, amount, attempt });
+    const tokenKey = tokenAddress.toLowerCase();
+    
+    // 检查是否正在卖出（防止并发冲突）
+    if (this.sellLocks.get(tokenKey)) {
+      this.logger.warn('卖出已在进行中，跳过重复操作', { token: tokenAddress });
+      return {
+        success: false,
+        error: '该代币正在卖出中，避免重复操作'
+      };
+    }
+    
+    // 设置卖出锁
+    this.sellLocks.set(tokenKey, true);
+    
+    try {
+      for (let attempt = 1; attempt <= this.MAX_RETRY_ATTEMPTS; attempt++) {
+        try {
+          this.logger.info('准备卖出代币', { token: tokenAddress, amount, attempt });
 
         const path = [tokenAddress, this.config.wbnbAddress];
         const tokenContract = new this.web3.eth.Contract(ERC20_ABI, tokenAddress);
@@ -687,12 +703,16 @@ export class SniperBot {
         }
       }
     }
-
+  
     // 所有尝试都失败
     return {
       success: false,
       error: '卖出失败，已达到最大重试次数'
     };
+    } finally {
+      // 释放卖出锁
+      this.sellLocks.delete(tokenKey);
+    }
   }
 
   /**
